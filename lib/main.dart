@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'android_download.dart';
 import 'game.dart';
 
 const String _saveKey = 'lifestyle_game_save_v1';
@@ -103,6 +105,11 @@ class _LifeHomeState extends State<LifeHome> {
                 child: ListView(
                   padding: const EdgeInsets.all(16),
                   children: [
+                    // The APK download only makes sense on the website, not inside the app.
+                    if (kIsWeb) ...[
+                      const AndroidDownloadCard(),
+                      const SizedBox(height: 12),
+                    ],
                     _StatsCard(game: game),
                     const SizedBox(height: 12),
                     _MessageBar(text: game.message),

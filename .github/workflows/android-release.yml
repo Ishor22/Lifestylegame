@@ -1,0 +1,159 @@
+name: Android APK
+
+on:
+  push:
+    branches:
+      - claude/upbeat-hamilton-74kh8x
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Analyze, test and build (debug check)
+    runs-on: ubuntu-latest
+    outputs:
+      has_signing: ${{ steps.signing.outputs.ready }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Verify Android debug build compiles
+        run: flutter build apk --debug
+
+      - name: Check release signing secrets
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # Only checks presence. Values are never printed.
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "Release signing secrets are set. The release job will run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Release skipped"
+              echo ""
+              echo "The debug build and tests passed, but no APK was published because the Android signing secrets are not set."
+              echo "See docs/android-release-setup.md for the one-time setup."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  release:
+    name: Build signed APK and publish release
+    needs: check
+    if: needs.check.outputs.has_signing == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Restore release signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Values come from secrets and are written only to runner-local files, never echoed.
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          chmod 600 "$RUNNER_TEMP/release.keystore"
+          {
+            printf 'storePassword=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyPassword=%s\n' "$KEY_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/release.keystore"
+          } > android/key.properties
+          chmod 600 android/key.properties
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build signed release APK
+        run: |
+          flutter build apk --release \
+            --build-name=1.0.0 \
+            --build-number=${{ github.run_number }}
+
+      - name: Verify APK is release-signed and has the right identity
+        run: |
+          set -euo pipefail
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --verbose "$APK"
+          CERTS=$("$BT/apksigner" verify --print-certs "$APK")
+          if echo "$CERTS" | grep -q "Android Debug"; then
+            echo "APK is signed with the debug key. Refusing to publish." >&2
+            exit 1
+          fi
+          "$BT/aapt" dump badging "$APK" | grep -E "^package|application-label:" | head -5
+
+      - name: Prepare stable file name
+        run: cp build/app/outputs/flutter-apk/app-release.apk my-life-business-tycoon.apk
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="build-${{ github.run_number }}"
+          gh release create "$TAG" my-life-business-tycoon.apk \
+            --target "$GITHUB_SHA" \
+            --title "My Life: Business Tycoon (build ${{ github.run_number }})" \
+            --notes "Android APK built from commit ${GITHUB_SHA:0:7}. Version 1.0.0, build number ${{ github.run_number }}. Download: https://github.com/${{ github.repository }}/releases/latest/download/my-life-business-tycoon.apk" \
+            --latest
+          {
+            echo "### Published"
+            echo ""
+            echo "Release: $TAG"
+            echo "Stable download: https://github.com/${{ github.repository }}/releases/latest/download/my-life-business-tycoon.apk"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove signing files
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore" android/key.properties
