@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Test double for the GitHub CLI. Controlled by environment variables:
+#   STUB_DIR         folder where saved secrets and the call log are written
+#   STUB_EXISTING    space-separated secret names that already exist
+#   STUB_API_FAIL    "1" makes listing secrets fail
+#   STUB_FAIL_SET    secret name whose "gh secret set" must fail
+set -euo pipefail
+
+if [ "$1" = "api" ]; then
+  if [ "${STUB_API_FAIL:-0}" = "1" ]; then
+    exit 1
+  fi
+  for name in ${STUB_EXISTING:-}; do
+    echo "${name}"
+  done
+  exit 0
+fi
+
+if [ "$1" = "secret" ] && [ "$2" = "set" ]; then
+  name="$3"
+  cat > "${STUB_DIR}/value-${name}.tmp"
+  echo "set ${name}" >> "${STUB_DIR}/calls.log"
+  if [ "${name}" = "${STUB_FAIL_SET:-}" ]; then
+    rm -f "${STUB_DIR}/value-${name}.tmp"
+    exit 1
+  fi
+  mv "${STUB_DIR}/value-${name}.tmp" "${STUB_DIR}/saved-${name}"
+  exit 0
+fi
+
+echo "stub gh: unsupported call" >&2
+exit 99

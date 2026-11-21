@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Test wrapper. Forwards every call to the real Python. With FAIL_PACK=1 it makes "pack" fail,
+# to test that plaintext key material is removed after a crash.
+if [ "${FAIL_PACK:-0}" = "1" ] && [ "${2:-}" = "pack" ]; then
+  exit 1
+fi
+exec "${REAL_PYTHON}" "$@"

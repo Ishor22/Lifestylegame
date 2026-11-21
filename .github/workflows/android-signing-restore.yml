@@ -1,0 +1,81 @@
+name: Android signing restore
+
+# Restores the SAME signing key from the encrypted backup artifact of an earlier setup run.
+# - Never generates a key.
+# - Stops if the restored certificate SHA-256 does not match the fingerprint recorded at creation.
+# - Use it to finish a setup that stopped partway, or to recover after losing the secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type RESTORE-SAME-KEY to confirm'
+        required: true
+        type: string
+      setup_run_id:
+        description: 'Run ID of the "Android signing setup (one-time)" run that holds the backup'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: android-signing-secrets
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    name: Restore signing key from backup
+    runs-on: ubuntu-latest
+    if: inputs.confirm == 'RESTORE-SAME-KEY'
+    timeout-minutes: 20
+    env:
+      RUN_ID: ${{ inputs.setup_run_id }}
+      GH_TOKEN: ${{ secrets.ANDROID_SETUP_TOKEN }}
+      REPO: ${{ github.repository }}
+      BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+      WORK: ${{ runner.temp }}/restore-work
+      DOWNLOAD: ${{ runner.temp }}/restore-in
+    steps:
+      - name: Check out scripts
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 17 (keytool)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python and pinned crypto library
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned cryptography version
+        run: python3 -m pip install --disable-pip-version-check "cryptography==50.0.1"
+
+      - name: Download encrypted backup from the setup run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "${RUN_ID}" in
+            ''|*[!0-9]*) echo "::error::setup_run_id must be a number" >&2; exit 1 ;;
+          esac
+          gh run download "${RUN_ID}" --repo "${REPO}" \
+            --name my-life-android-signing-backup-encrypted --dir "${DOWNLOAD}"
+          test -f "${DOWNLOAD}/mylife-android-signing-backup.enc" \
+            || { echo "::error::backup file not found in that run" >&2; exit 1; }
+          echo "BACKUP_FILE=${DOWNLOAD}/mylife-android-signing-backup.enc" >> "$GITHUB_ENV"
+
+      - name: Restore the same key and write the four secrets
+        # Never generates a key. Stops if the certificate does not match the recorded fingerprint.
+        run: bash scripts/android-signing/restore_key.sh
+
+      - name: Remove temporary key material
+        if: always()
+        run: rm -rf "${WORK}" "${DOWNLOAD}"

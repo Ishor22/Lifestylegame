@@ -52,3 +52,10 @@ android/key.properties
 *.jks
 *.keystore
 android-release-keystore/
+
+# Android signing material (never commit)
+*.p12
+*.enc
+backup-out/
+keysetup/
+restore-in/
