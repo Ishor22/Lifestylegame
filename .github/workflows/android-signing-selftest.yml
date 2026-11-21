@@ -1,0 +1,57 @@
+name: Android signing self-test (no secrets)
+
+# Non-production test of the signing backup tools on a GitHub-hosted runner.
+# - Uses NO repository secrets. It cannot create or change signing secrets.
+# - Generates a throwaway key and a random test passphrase inside the runner only.
+# - Never publishes an APK or a release.
+
+on:
+  push:
+    branches:
+      - claude/upbeat-hamilton-74kh8x
+    paths:
+      - "scripts/android-signing/**"
+      - ".github/workflows/android-signing-selftest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    name: Crypto and keystore self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 17 (keytool)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned cryptography version
+        run: python3 -m pip install --disable-pip-version-check "cryptography==50.0.1"
+
+      - name: Show runner and tool versions
+        run: |
+          uname -a
+          python3 --version
+          python3 -c "import cryptography; print('cryptography', cryptography.__version__)"
+          openssl version
+          java -version 2>&1 | head -1
+
+      - name: Crypto self-test (AES-256-GCM, scrypt, memory)
+        run: python3 scripts/android-signing/tests/selftest_crypto.py
+
+      - name: Keystore and overwrite-policy tests (stub GitHub CLI, real keytool)
+        run: bash scripts/android-signing/tests/run_tests.sh

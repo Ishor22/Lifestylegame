@@ -16,7 +16,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${HERE}/common.sh"
 
 MODE="${1:-}"
-BACKUP_NAME="mylife-android-signing-backup.enc"
+BACKUP_NAME="my-life-android-signing-backup.txt"
 KEYSTORE_NAME="mylife-upload.p12"
 
 case "${MODE}" in
@@ -82,7 +82,9 @@ case "${MODE}" in
         echo ""
         echo "Certificate SHA-256: \`${FINGERPRINT}\`"
         echo ""
-        echo "Encrypted backup verified. Next: the backup is uploaded, then the secrets are saved."
+        echo "Encrypted backup verified. Next: the backup is uploaded as an artifact, then the secrets are saved."
+        echo ""
+        echo "Save the artifact's text file to iCloud Drive. Restore needs only that file and the passphrase."
       } >> "${GITHUB_STEP_SUMMARY}"
     fi
     ;;

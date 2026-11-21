@@ -1,28 +1,34 @@
 #!/usr/bin/env python3
 """Authenticated encryption for the Android release-signing backup.
 
-Backup file format (version 1, binary):
+The backup is a short ASCII-armored text file, so it can be saved in iCloud Drive and copied
+on an iPhone without any converter. Inside the armor is a binary blob:
+
     magic     4 bytes   b"MLBK"
     version   1 byte    0x01
     salt      16 bytes  random, input to scrypt
     nonce     12 bytes  random, for AES-256-GCM
     body      n bytes   AES-256-GCM ciphertext followed by its 16-byte tag
 
+    -----BEGIN MYLIFE SIGNING BACKUP v1-----
+    <base64 of the blob, wrapped at 64 characters>
+    -----END MYLIFE SIGNING BACKUP v1-----
+
 The header is passed as associated data, so changing any header byte is detected too.
 Key derivation: scrypt (N=2^17, r=8, p=1) from the passphrase and salt, producing 32 bytes.
 
-The passphrase is read from the environment variable BACKUP_PASSPHRASE. It is never
-accepted on the command line, so it does not appear in process lists or shell history.
+The passphrase is read from the environment variable BACKUP_PASSPHRASE, never from the command line.
 
 Commands:
     pack    --p12 FILE --alias NAME --fingerprint SHA256 --store-pass-env VAR --out FILE
     unpack  --in FILE --dir DIR
         unpack writes DIR/mylife-upload.p12, DIR/credentials.env and DIR/expected-sha256.txt.
-        Exit code 2 means the passphrase is wrong or the file was modified.
+        Exit code 2 means the file is invalid, the passphrase is wrong, or the file was modified.
 """
 
 import argparse
 import base64
+import binascii
 import json
 import os
 import sys
@@ -41,6 +47,9 @@ SCRYPT_R = 8
 SCRYPT_P = 1
 KEYSTORE_NAME = "mylife-upload.p12"
 PAYLOAD_FORMAT = 1
+ARMOR_BEGIN = "-----BEGIN MYLIFE SIGNING BACKUP v1-----"
+ARMOR_END = "-----END MYLIFE SIGNING BACKUP v1-----"
+ARMOR_WIDTH = 64
 
 
 class BackupError(Exception):
@@ -69,7 +78,7 @@ def encrypt_bytes(plaintext, passphrase):
 
 def decrypt_bytes(blob, passphrase):
     if len(blob) < HEADER_LEN + 16 or blob[:4] != MAGIC or blob[4] != VERSION:
-        raise BackupError("the file is not a valid signing backup")
+        raise BackupError("the text is not a valid signing backup")
     header = blob[:HEADER_LEN]
     salt = header[5:5 + SALT_LEN]
     nonce = header[5 + SALT_LEN:HEADER_LEN]
@@ -77,6 +86,32 @@ def decrypt_bytes(blob, passphrase):
         return AESGCM(derive_key(passphrase, salt)).decrypt(nonce, blob[HEADER_LEN:], header)
     except InvalidTag:
         raise BackupError("authentication failed: wrong passphrase or the backup was modified")
+
+
+def armor(blob):
+    """Returns the ASCII-armored text for a binary blob."""
+    body = base64.b64encode(blob).decode("ascii")
+    lines = [body[i:i + ARMOR_WIDTH] for i in range(0, len(body), ARMOR_WIDTH)]
+    return "\n".join([ARMOR_BEGIN, *lines, ARMOR_END]) + "\n"
+
+
+def dearmor(text):
+    """Returns the binary blob from armored text. Tolerates CRLF line endings, indentation,
+    blank lines and a missing final newline, which copy-paste on a phone can introduce."""
+    lines = [line.strip() for line in text.replace("\r", "").split("\n")]
+    lines = [line for line in lines if line]
+    try:
+        begin = lines.index(ARMOR_BEGIN)
+        end = lines.index(ARMOR_END, begin + 1)
+    except ValueError:
+        raise BackupError("the text is not a valid signing backup (BEGIN/END lines missing)")
+    body = "".join(lines[begin + 1:end])
+    if not body:
+        raise BackupError("the signing backup text is empty")
+    try:
+        return base64.b64decode(body, validate=True)
+    except (ValueError, binascii.Error):
+        raise BackupError("the signing backup text is damaged (invalid characters)")
 
 
 def write_private(path, data):
@@ -100,16 +135,16 @@ def cmd_pack(args):
         "sha256": args.fingerprint,
         "p12_base64": base64.b64encode(p12).decode("ascii"),
     }
-    blob = encrypt_bytes(json.dumps(payload).encode("utf-8"), passphrase)
-    write_private(args.out, blob)
-    print(f"Encrypted backup written ({len(blob)} bytes).")
+    text = armor(encrypt_bytes(json.dumps(payload).encode("utf-8"), passphrase))
+    write_private(args.out, text.encode("ascii"))
+    print(f"Encrypted backup written ({len(text)} characters).")
 
 
 def cmd_unpack(args):
     passphrase = read_passphrase()
     with open(args.infile, "rb") as handle:
-        blob = handle.read()
-    plaintext = decrypt_bytes(blob, passphrase)
+        text = handle.read().decode("utf-8", errors="strict")
+    plaintext = decrypt_bytes(dearmor(text), passphrase)
     try:
         payload = json.loads(plaintext.decode("utf-8"))
         if payload.get("format") != PAYLOAD_FORMAT:
@@ -119,7 +154,7 @@ def cmd_unpack(args):
         store_password = payload["store_password"]
         key_password = payload["key_password"]
         fingerprint = payload["sha256"]
-    except (KeyError, ValueError, TypeError) as exc:
+    except (KeyError, ValueError, TypeError, UnicodeDecodeError) as exc:
         raise BackupError(f"backup payload is malformed: {exc.__class__.__name__}")
     os.makedirs(args.dir, mode=0o700, exist_ok=True)
     write_private(os.path.join(args.dir, KEYSTORE_NAME), p12)
@@ -157,7 +192,7 @@ def main(argv=None):
     except BackupError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         print(f"ERROR: file error ({exc.__class__.__name__})", file=sys.stderr)
         return 1
     return 0

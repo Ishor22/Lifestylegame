@@ -1,9 +1,16 @@
 name: Android signing restore
 
-# Restores the SAME signing key from the encrypted backup artifact of an earlier setup run.
+# Restores the SAME signing key from your saved backup text.
+#
+# Source of the backup: the repository secret ANDROID_SIGNING_BACKUP, which you paste from the
+# my-life-android-signing-backup.txt file you saved in iCloud Drive. The GitHub artifact is NOT needed.
+#
+# Safety rules, enforced by restore_key.sh before anything is written:
 # - Never generates a key.
+# - 0 of 4 secrets exist: restore proceeds.
+# - 1 to 3 exist: needs partial_confirm = COMPLETE-PARTIAL-RESTORE.
+# - All 4 exist: refused unless replace_confirm = REPLACE-COMPLETE-SIGNING-KEY.
 # - Stops if the restored certificate SHA-256 does not match the fingerprint recorded at creation.
-# - Use it to finish a setup that stopped partway, or to recover after losing the secrets.
 
 on:
   workflow_dispatch:
@@ -12,14 +19,19 @@ on:
         description: 'Type RESTORE-SAME-KEY to confirm'
         required: true
         type: string
-      setup_run_id:
-        description: 'Run ID of the "Android signing setup (one-time)" run that holds the backup'
-        required: true
+      partial_confirm:
+        description: 'Only if 1 to 3 signing secrets exist: type COMPLETE-PARTIAL-RESTORE'
+        required: false
+        default: ""
+        type: string
+      replace_confirm:
+        description: 'Only if all 4 signing secrets exist: type REPLACE-COMPLETE-SIGNING-KEY (replacing a published key can block future app updates)'
+        required: false
+        default: ""
         type: string
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: android-signing-secrets
@@ -27,17 +39,18 @@ concurrency:
 
 jobs:
   restore:
-    name: Restore signing key from backup
+    name: Restore signing key from backup text
     runs-on: ubuntu-latest
     if: inputs.confirm == 'RESTORE-SAME-KEY'
     timeout-minutes: 20
     env:
-      RUN_ID: ${{ inputs.setup_run_id }}
       GH_TOKEN: ${{ secrets.ANDROID_SETUP_TOKEN }}
       REPO: ${{ github.repository }}
       BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+      SIGNING_BACKUP: ${{ secrets.ANDROID_SIGNING_BACKUP }}
+      PARTIAL_CONFIRM: ${{ inputs.partial_confirm }}
+      REPLACE_CONFIRM: ${{ inputs.replace_confirm }}
       WORK: ${{ runner.temp }}/restore-work
-      DOWNLOAD: ${{ runner.temp }}/restore-in
     steps:
       - name: Check out scripts
         uses: actions/checkout@v4
@@ -50,7 +63,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Python and pinned crypto library
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -58,24 +71,10 @@ jobs:
       - name: Install pinned cryptography version
         run: python3 -m pip install --disable-pip-version-check "cryptography==50.0.1"
 
-      - name: Download encrypted backup from the setup run
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          case "${RUN_ID}" in
-            ''|*[!0-9]*) echo "::error::setup_run_id must be a number" >&2; exit 1 ;;
-          esac
-          gh run download "${RUN_ID}" --repo "${REPO}" \
-            --name my-life-android-signing-backup-encrypted --dir "${DOWNLOAD}"
-          test -f "${DOWNLOAD}/mylife-android-signing-backup.enc" \
-            || { echo "::error::backup file not found in that run" >&2; exit 1; }
-          echo "BACKUP_FILE=${DOWNLOAD}/mylife-android-signing-backup.enc" >> "$GITHUB_ENV"
-
       - name: Restore the same key and write the four secrets
-        # Never generates a key. Stops if the certificate does not match the recorded fingerprint.
+        # Never generates a key. Applies the overwrite policy before decrypting or writing.
         run: bash scripts/android-signing/restore_key.sh
 
       - name: Remove temporary key material
         if: always()
-        run: rm -rf "${WORK}" "${DOWNLOAD}"
+        run: rm -rf "${WORK}"
