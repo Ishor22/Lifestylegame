@@ -39,7 +39,8 @@ jobs:
         run: flutter pub get
 
       - name: Analyze
-        run: flutter analyze
+        # Fail on errors and warnings. Info-level SDK deprecation notices do not fail the build.
+        run: flutter analyze --no-fatal-infos
 
       - name: Test
         run: flutter test
