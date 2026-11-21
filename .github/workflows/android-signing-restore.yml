@@ -50,7 +50,6 @@ jobs:
       SIGNING_BACKUP: ${{ secrets.ANDROID_SIGNING_BACKUP }}
       PARTIAL_CONFIRM: ${{ inputs.partial_confirm }}
       REPLACE_CONFIRM: ${{ inputs.replace_confirm }}
-      WORK: ${{ runner.temp }}/restore-work
     steps:
       - name: Check out scripts
         uses: actions/checkout@v4
@@ -73,8 +72,12 @@ jobs:
 
       - name: Restore the same key and write the four secrets
         # Never generates a key. Applies the overwrite policy before decrypting or writing.
+        env:
+          WORK: ${{ runner.temp }}/restore-work
         run: bash scripts/android-signing/restore_key.sh
 
       - name: Remove temporary key material
         if: always()
+        env:
+          WORK: ${{ runner.temp }}/restore-work
         run: rm -rf "${WORK}"
